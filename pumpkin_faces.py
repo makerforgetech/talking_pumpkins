@@ -2,6 +2,8 @@
 import math
 import random
 import pygame
+import numpy as np
+import sounddevice as sd
 
 pygame.init()
 
@@ -20,6 +22,9 @@ BLACK = (0, 0, 0)
 PUMPKIN = (152, 55, 8)
 CARVE_GLOW = (255, 174, 24)
 
+MICROPHONE_BLOCKSIZE = 512
+MICROPHONE_LATENCY = "low"
+
 # Add, remove, or edit entries to control the pumpkins.  Centre coordinates
 # are normalized (0.0 to 1.0) within the display; scale is a fraction of the
 # display height.
@@ -29,13 +34,15 @@ PUMPKINS = [
         "scale": 0.2,
         "angry": False,
         "mouth_speed": 5.0,
+        "use_microphone": True,
     },
     {
-        "center": (0.5, 0.50),
+        "center": (0.6, 0.50),
         "scale": 0.2,
         "angry": True,
         "mouth_speed": 4.0,
         "mouth_phase": 1.5,
+        "use_microphone": True,
     },
 ]
 
@@ -62,9 +69,25 @@ def glowing_polygon(surface, points, cx, cy):
         (1.10, (255, 137, 0, 70)),
         (1.03, (255, 186, 35, 150)),
     ]:
-        glow = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
-        polygon(glow, colour, scaled_points(points, cx, cy, size))
-        surface.blit(glow, (0, 0), special_flags=pygame.BLEND_ADD)
+        layer_points = scaled_points(points, cx, cy, size)
+        min_x = math.floor(min(x for x, _ in layer_points))
+        max_x = math.ceil(max(x for x, _ in layer_points))
+        min_y = math.floor(min(y for _, y in layer_points))
+        max_y = math.ceil(max(y for _, y in layer_points))
+        padding = max(4, int(max(max_x - min_x, max_y - min_y) * 0.12))
+        bounds = pygame.Rect(
+            min_x - padding,
+            min_y - padding,
+            max_x - min_x + padding * 2 + 1,
+            max_y - min_y + padding * 2 + 1,
+        )
+        glow = pygame.Surface(bounds.size, pygame.SRCALPHA)
+        polygon(
+            glow,
+            colour,
+            [(x - bounds.left, y - bounds.top) for x, y in layer_points],
+        )
+        surface.blit(glow, bounds.topleft, special_flags=pygame.BLEND_ADD)
 
     polygon(surface, (18, 5, 1), points)
 
@@ -126,6 +149,41 @@ class FaceMotion:
                 blink = abs(1.0 - 2.0 * progress)
 
         return self.gaze_x, self.gaze_y, max(0.04, blink)
+
+
+class MicrophoneLevel:
+    """Capture microphone volume and convert it into a smooth mouth opening."""
+
+    def __init__(self):
+        self.level = 0.0
+        self.smoothed_level = 0.0
+        self.stream = sd.InputStream(
+            channels=1,
+            samplerate=None,
+            blocksize=MICROPHONE_BLOCKSIZE,
+            latency=MICROPHONE_LATENCY,
+            callback=self._callback,
+        )
+        self.stream.start()
+
+    def _callback(self, indata, frames, callback_time, status):
+        # Do not print recoverable overflows from the real-time callback.
+        if status and not status.input_overflow:
+            print(f"Microphone status: {status}")
+        self.level = float(np.sqrt(np.mean(indata[:, 0] ** 2)))
+
+    def opening(self, dt):
+        # Ignore a small ambient noise floor and smooth rapid changes.
+        target = max(0.0, self.level - 0.015) * 12.0
+        target = min(1.0, target)
+        speed = 90.0 if target > self.smoothed_level else 18.0
+        smoothing = 1.0 - math.exp(-dt * speed)
+        self.smoothed_level += (target - self.smoothed_level) * smoothing
+        return self.smoothed_level
+
+    def close(self):
+        self.stream.stop()
+        self.stream.close()
 
 
 def draw_eye(surface, x, y, size, angry, gaze_x, gaze_y, blink):
@@ -266,15 +324,20 @@ def draw_face(surface, cx, cy, scale, angry, opening, motion):
     )
 
 
-def draw_scene(surface, width, height, pumpkins, motion_states, elapsed):
+def draw_scene(surface, width, height, pumpkins, motion_states, elapsed,
+               microphone_opening=None):
     """Draw the configured pumpkins into one display-sized scene."""
     surface.fill(BLACK)
 
     for pumpkin, motion in zip(pumpkins, motion_states):
         center_x, center_y = pumpkin["center"]
-        opening = 0.5 + 0.5 * math.sin(
-            elapsed * pumpkin["mouth_speed"] + pumpkin.get("mouth_phase", 0.0)
-        )
+        if not pumpkin.get("use_microphone", False) or microphone_opening is None:
+            opening = 0.5 + 0.5 * math.sin(
+                elapsed * pumpkin["mouth_speed"]
+                + pumpkin.get("mouth_phase", 0.0)
+            )
+        else:
+            opening = microphone_opening
         draw_face(
             surface,
             width * center_x,
@@ -291,6 +354,11 @@ def main():
     start = pygame.time.get_ticks() / 1000.0
 
     motion_states = [FaceMotion(start) for _ in PUMPKINS]
+    microphone = (
+        MicrophoneLevel()
+        if any(pumpkin.get("use_microphone", False) for pumpkin in PUMPKINS)
+        else None
+    )
 
     previous_time = start
 
@@ -311,14 +379,19 @@ def main():
         updated_motion_states = [
             motion.update(now, dt) for motion in motion_states
         ]
+        microphone_opening = (
+            microphone.opening(dt) if microphone is not None else None
+        )
         draw_scene(
             screen, WIDTH, HEIGHT, PUMPKINS,
-            updated_motion_states, t
+            updated_motion_states, t, microphone_opening
         )
 
         pygame.display.flip()
         clock.tick(60)
 
+    if microphone is not None:
+        microphone.close()
     pygame.quit()
 
 
