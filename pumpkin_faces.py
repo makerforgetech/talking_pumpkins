@@ -17,7 +17,27 @@ pygame.display.set_caption("Pumpkin Face Projection")
 clock = pygame.time.Clock()
 
 BLACK = (0, 0, 0)
-GOLD = (255, 175, 0)
+PUMPKIN = (152, 55, 8)
+CARVE_GLOW = (255, 174, 24)
+
+# Add, remove, or edit entries to control the pumpkins.  Centre coordinates
+# are normalized (0.0 to 1.0) within the display; scale is a fraction of the
+# display height.
+PUMPKINS = [
+    {
+        "center": (0.29, 0.50),
+        "scale": 0.2,
+        "angry": False,
+        "mouth_speed": 5.0,
+    },
+    {
+        "center": (0.5, 0.50),
+        "scale": 0.2,
+        "angry": True,
+        "mouth_speed": 4.0,
+        "mouth_phase": 1.5,
+    },
+]
 
 
 def polygon(surface, colour, points):
@@ -26,6 +46,27 @@ def polygon(surface, colour, points):
         surface, colour,
         [(int(x), int(y)) for x, y in points]
     )
+
+
+def scaled_points(points, cx, cy, scale):
+    return [
+        (cx + (x - cx) * scale, cy + (y - cy) * scale)
+        for x, y in points
+    ]
+
+
+def glowing_polygon(surface, points, cx, cy):
+    """Draw a dark carved opening with a warm light behind its edge."""
+    for size, colour in [
+        (1.20, (255, 91, 0, 28)),
+        (1.10, (255, 137, 0, 70)),
+        (1.03, (255, 186, 35, 150)),
+    ]:
+        glow = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        polygon(glow, colour, scaled_points(points, cx, cy, size))
+        surface.blit(glow, (0, 0), special_flags=pygame.BLEND_ADD)
+
+    polygon(surface, (18, 5, 1), points)
 
 
 class FaceMotion:
@@ -88,14 +129,14 @@ class FaceMotion:
 
 
 def draw_eye(surface, x, y, size, angry, gaze_x, gaze_y, blink):
-    """Draw a glowing eye with a moving pupil and animated blink."""
+    """Draw an eye-shaped opening with a warm light behind it."""
 
     height = size * (1.5 if not angry else 1.1) * blink
 
     if blink < 0.12:
         # Thin line when the eye is almost closed.
         pygame.draw.line(
-            surface, GOLD,
+            surface, CARVE_GLOW,
             (int(x - size), int(y)),
             (int(x + size), int(y)),
             max(2, int(size * 0.12))
@@ -113,21 +154,11 @@ def draw_eye(surface, x, y, size, angry, gaze_x, gaze_y, blink):
         (x - size * 0.55, y + height * 0.65),
     ]
 
-    polygon(surface, GOLD, points)
-
-    # Keep pupils inside the eye as they look around.
-    pupil_x = x + gaze_x * size * 0.36
-    pupil_y = y + gaze_y * size * 0.30
-
-    pygame.draw.circle(
-        surface, BLACK,
-        (int(pupil_x), int(pupil_y)),
-        max(2, int(size * 0.28))
-    )
+    glowing_polygon(surface, points, x, y)
 
 
 def draw_mouth(surface, cx, cy, width, opening, angry):
-    """Draw a mouth whose opening can later be driven by microphone input."""
+    """Draw a jagged carved opening with a warm light behind it."""
 
     opening = max(0.0, min(1.0, opening))
     w = width
@@ -135,7 +166,7 @@ def draw_mouth(surface, cx, cy, width, opening, angry):
 
     if opening < 0.08:
         pygame.draw.arc(
-            surface, GOLD,
+            surface, CARVE_GLOW,
             (int(cx - w / 2), int(cy - 5), int(w), 16),
             math.pi, 2 * math.pi,
             max(2, int(width * 0.025))
@@ -167,16 +198,16 @@ def draw_mouth(surface, cx, cy, width, opening, angry):
             (cx - w * 0.32, cy + h),
         ]
 
-    polygon(surface, GOLD, points)
+    glowing_polygon(surface, points, cx, cy)
 
-    # Black triangular gaps create the appearance of teeth.
+    # Leave a few darker triangular notches in the carved edge.
     if opening > 0.25:
         tooth_y = cy + h * 0.25
         tooth_w = w * 0.12
         tooth_h = h * 0.28
 
         for tx in [cx - w * 0.22, cx + w * 0.22]:
-            polygon(surface, BLACK, [
+            polygon(surface, (3, 1, 0), [
                 (tx - tooth_w / 2, cy),
                 (tx + tooth_w / 2, cy),
                 (tx, tooth_y + tooth_h)
@@ -185,6 +216,23 @@ def draw_mouth(surface, cx, cy, width, opening, angry):
 
 def draw_face(surface, cx, cy, scale, angry, opening, motion):
     gaze_x, gaze_y, blink = motion
+
+    # Layered ellipses give the pumpkin a ribbed, uneven surface.
+    body = pygame.Rect(
+        int(cx - scale * 1.05), int(cy - scale * 0.98),
+        int(scale * 2.10), int(scale * 1.95)
+    )
+    pygame.draw.ellipse(surface, (76, 22, 3), body.inflate(scale * 0.08, scale * 0.08))
+    pygame.draw.ellipse(surface, PUMPKIN, body)
+    for offset, colour in [
+        (-0.52, (105, 31, 4)),
+        (-0.24, (184, 65, 7)),
+        (0.24, (111, 30, 3)),
+        (0.52, (70, 18, 2)),
+    ]:
+        rib = body.inflate(-abs(offset) * scale * 0.24, -scale * 0.04)
+        rib.centerx += int(offset * scale * 0.35)
+        pygame.draw.ellipse(surface, colour, rib, max(2, int(scale * 0.035)))
 
     eye_y = cy - scale * 0.22
     eye_dx = scale * 0.34
@@ -204,11 +252,12 @@ def draw_face(surface, cx, cy, scale, angry, opening, motion):
     nose_y = cy + scale * 0.02
     nose_size = scale * 0.09
 
-    polygon(surface, GOLD, [
+    nose_points = [
         (cx, nose_y - nose_size),
         (cx - nose_size, nose_y + nose_size),
         (cx + nose_size, nose_y + nose_size)
-    ])
+    ]
+    glowing_polygon(surface, nose_points, cx, nose_y)
 
     # Demo mouth animation; replace with microphone input later.
     draw_mouth(
@@ -217,28 +266,31 @@ def draw_face(surface, cx, cy, scale, angry, opening, motion):
     )
 
 
-def draw_scene(surface, width, height, left_open, right_open,
-               left_motion_state, right_motion_state):
-    """Draw both pumpkin faces into one display-sized scene."""
+def draw_scene(surface, width, height, pumpkins, motion_states, elapsed):
+    """Draw the configured pumpkins into one display-sized scene."""
     surface.fill(BLACK)
-    scale = min(width * 0.44, height * 0.38)
 
-    draw_face(
-        surface, width * 0.29, height * 0.50,
-        scale, False, left_open, left_motion_state
-    )
-    draw_face(
-        surface, width * 0.71, height * 0.50,
-        scale, True, right_open, right_motion_state
-    )
+    for pumpkin, motion in zip(pumpkins, motion_states):
+        center_x, center_y = pumpkin["center"]
+        opening = 0.5 + 0.5 * math.sin(
+            elapsed * pumpkin["mouth_speed"] + pumpkin.get("mouth_phase", 0.0)
+        )
+        draw_face(
+            surface,
+            width * center_x,
+            height * center_y,
+            height * pumpkin["scale"],
+            pumpkin.get("angry", False),
+            opening,
+            motion,
+        )
 
 
 def main():
     running = True
     start = pygame.time.get_ticks() / 1000.0
 
-    left_motion = FaceMotion(start)
-    right_motion = FaceMotion(start)
+    motion_states = [FaceMotion(start) for _ in PUMPKINS]
 
     previous_time = start
 
@@ -256,16 +308,12 @@ def main():
 
         t = now - start
 
-        # Demo mouth movement, independent for each pumpkin.
-        left_open = 0.5 + 0.5 * math.sin(t * 5.0)
-        right_open = 0.5 + 0.5 * math.sin(t * 4.0 + 1.5)
-
-        left_motion_state = left_motion.update(now, dt)
-        right_motion_state = right_motion.update(now, dt)
-
+        updated_motion_states = [
+            motion.update(now, dt) for motion in motion_states
+        ]
         draw_scene(
-            screen, WIDTH, HEIGHT, left_open, right_open,
-            left_motion_state, right_motion_state
+            screen, WIDTH, HEIGHT, PUMPKINS,
+            updated_motion_states, t
         )
 
         pygame.display.flip()
