@@ -23,7 +23,14 @@ PUMPKIN = (152, 55, 8)
 CARVE_GLOW = (255, 174, 24)
 
 MICROPHONE_BLOCKSIZE = 512
-MICROPHONE_LATENCY = "low"
+MICROPHONE_LATENCY = "high"
+AUDIO_SAMPLE_RATE = 48000
+# PipeWire routes to the operating system's selected/default speaker.
+AUDIO_OUTPUT_DEVICE = "pipewire"
+AUDIO_MONITORING = True # Forward microphone audio to the selected speaker.
+MICROPHONE_MODE = "default"  # "default" or "dji"
+MICROPHONE_CHANNELS = 2
+MICROPHONE_DEVICE = "DJI MIC MINI"
 
 # Add, remove, or edit entries to control the pumpkins.  Centre coordinates
 # are normalized (0.0 to 1.0) within the display; scale is a fraction of the
@@ -35,6 +42,7 @@ PUMPKINS = [
         "angry": False,
         "mouth_speed": 5.0,
         "use_microphone": True,
+        "microphone_channel": 0,
     },
     {
         "center": (0.6, 0.50),
@@ -43,6 +51,7 @@ PUMPKINS = [
         "mouth_speed": 4.0,
         "mouth_phase": 1.5,
         "use_microphone": True,
+        "microphone_channel": 1,
     },
 ]
 
@@ -152,34 +161,75 @@ class FaceMotion:
 
 
 class MicrophoneLevel:
-    """Capture microphone volume and convert it into a smooth mouth opening."""
+    """Capture microphone volume and convert it into mouth openings."""
 
     def __init__(self):
-        self.level = 0.0
-        self.smoothed_level = 0.0
-        self.stream = sd.InputStream(
-            channels=1,
-            samplerate=None,
-            blocksize=MICROPHONE_BLOCKSIZE,
-            latency=MICROPHONE_LATENCY,
-            callback=self._callback,
+        if MICROPHONE_MODE not in {"default", "dji"}:
+            raise ValueError(
+                "MICROPHONE_MODE must be 'default' or 'dji'"
+            )
+
+        self.input_channels = (
+            1 if MICROPHONE_MODE == "default" else MICROPHONE_CHANNELS
         )
+        self.levels = np.zeros(self.input_channels)
+        self.smoothed_levels = np.zeros(self.input_channels)
+        input_device = (
+            None if MICROPHONE_MODE == "default" else MICROPHONE_DEVICE
+        )
+
+        if AUDIO_MONITORING:
+            self.stream = sd.Stream(
+                device=(input_device, AUDIO_OUTPUT_DEVICE),
+                channels=(self.input_channels, 2),
+                samplerate=AUDIO_SAMPLE_RATE,
+                blocksize=MICROPHONE_BLOCKSIZE,
+                latency=MICROPHONE_LATENCY,
+                callback=self._monitor_callback,
+            )
+        else:
+            self.stream = sd.InputStream(
+                device=input_device,
+                channels=self.input_channels,
+                samplerate=AUDIO_SAMPLE_RATE,
+                blocksize=MICROPHONE_BLOCKSIZE,
+                latency=MICROPHONE_LATENCY,
+                callback=self._input_callback,
+            )
         self.stream.start()
 
-    def _callback(self, indata, frames, callback_time, status):
+    def _process_input(self, indata, status):
         # Do not print recoverable overflows from the real-time callback.
-        if status and not status.input_overflow:
+        if status and not (
+            status.input_overflow or status.output_underflow
+        ):
             print(f"Microphone status: {status}")
-        self.level = float(np.sqrt(np.mean(indata[:, 0] ** 2)))
+        self.levels = np.sqrt(np.mean(indata ** 2, axis=0))
 
-    def opening(self, dt):
+    def _monitor_callback(self, indata, outdata, frames, callback_time, status):
+        self._process_input(indata, status)
+        if self.input_channels == 1:
+            outdata[:] = indata[:, :1]
+        else:
+            outdata[:] = indata
+
+    def _input_callback(self, indata, frames, callback_time, status):
+        self._process_input(indata, status)
+
+    def openings(self, dt):
         # Ignore a small ambient noise floor and smooth rapid changes.
-        target = max(0.0, self.level - 0.015) * 12.0
-        target = min(1.0, target)
-        speed = 90.0 if target > self.smoothed_level else 18.0
-        smoothing = 1.0 - math.exp(-dt * speed)
-        self.smoothed_level += (target - self.smoothed_level) * smoothing
-        return self.smoothed_level
+        target = np.clip((self.levels - 0.015) * 12.0, 0.0, 1.0)
+        for channel in range(self.input_channels):
+            speed = (
+                90.0
+                if target[channel] > self.smoothed_levels[channel]
+                else 18.0
+            )
+            smoothing = 1.0 - math.exp(-dt * speed)
+            self.smoothed_levels[channel] += (
+                target[channel] - self.smoothed_levels[channel]
+            ) * smoothing
+        return self.smoothed_levels.tolist()
 
     def close(self):
         self.stream.stop()
@@ -325,19 +375,27 @@ def draw_face(surface, cx, cy, scale, angry, opening, motion):
 
 
 def draw_scene(surface, width, height, pumpkins, motion_states, elapsed,
-               microphone_opening=None):
+               microphone_openings=None):
     """Draw the configured pumpkins into one display-sized scene."""
     surface.fill(BLACK)
 
     for pumpkin, motion in zip(pumpkins, motion_states):
         center_x, center_y = pumpkin["center"]
-        if not pumpkin.get("use_microphone", False) or microphone_opening is None:
+        if (
+            not pumpkin.get("use_microphone", False)
+            or microphone_openings is None
+        ):
             opening = 0.5 + 0.5 * math.sin(
                 elapsed * pumpkin["mouth_speed"]
                 + pumpkin.get("mouth_phase", 0.0)
             )
         else:
-            opening = microphone_opening
+            channel = (
+                pumpkin.get("microphone_channel", 0)
+                if MICROPHONE_MODE == "dji"
+                else 0
+            )
+            opening = microphone_openings[channel]
         draw_face(
             surface,
             width * center_x,
@@ -379,12 +437,12 @@ def main():
         updated_motion_states = [
             motion.update(now, dt) for motion in motion_states
         ]
-        microphone_opening = (
-            microphone.opening(dt) if microphone is not None else None
+        microphone_openings = (
+            microphone.openings(dt) if microphone is not None else None
         )
         draw_scene(
             screen, WIDTH, HEIGHT, PUMPKINS,
-            updated_motion_states, t, microphone_opening
+            updated_motion_states, t, microphone_openings
         )
 
         pygame.display.flip()

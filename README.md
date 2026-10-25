@@ -7,33 +7,21 @@ continuously or respond to microphone volume.
 The display uses the second monitor when one is available and falls back to the
 primary display otherwise.
 
-## Programs
+## Running
 
-### `pumpkin_faces.py`
-
-The original single-microphone version. It opens the system default audio
-input and uses that input to animate the mouths. Both pumpkins respond to the
-same microphone level.
-
-Run it with:
+The project now uses one program, `pumpkin_faces.py`:
 
 ```bash
 ./run_pumpkin.sh
 ```
 
-### `pumpkin_dji_mic_mini.py`
+Choose the microphone mode by editing `MICROPHONE_MODE` near the top of
+`pumpkin_faces.py`:
 
-The dual-microphone DJI version. It opens the `DJI MIC MINI` USB audio device
-with two input channels:
-
-- Channel 1 drives the left pumpkin's mouth.
-- Channel 2 drives the right pumpkin's mouth.
-
-Run it with:
-
-```bash
-./run_pumpkin_dji.sh
-```
+- `"default"` uses the operating system's default microphone. All
+  microphone-enabled pumpkins respond to that one input.
+- `"dji"` uses the two-channel `DJI MIC MINI` receiver. Channel 1 drives the
+  left pumpkin's mouth and channel 2 drives the right pumpkin's mouth.
 
 The DJI receiver must output the microphones as separate stereo channels. If
 it is in mono or merged mode, both USB channels contain the combined signal and
@@ -45,7 +33,7 @@ To switch the DJI receiver to separate stereo output:
 2. Connect the receiver to the computer.
 3. Press the receiver's **Link** button to switch the audio output between
    merged mono and separate stereo.
-4. Start `./run_pumpkin_dji.sh` again after changing the mode.
+4. Start `./run_pumpkin.sh` again after changing the mode.
 
 ## Installation
 
@@ -63,18 +51,15 @@ required when using the launchers.
 ## Controls
 
 - Press **Escape** to exit fullscreen mode.
-- Edit the `PUMPKINS` configuration in either Python file to change positions,
+- Edit the `PUMPKINS` configuration in `pumpkin_faces.py` to change positions,
   scale, appearance, or microphone assignments.
 
-The DJI version identifies the receiver by the device name
-`DJI MIC MINI`. If the operating system reports a different name, update
-`MICROPHONE_DEVICE` in `pumpkin_dji_mic_mini.py`.
+The DJI mode identifies the receiver by the device name `DJI MIC MINI`. If the
+operating system reports a different name, update `MICROPHONE_DEVICE`.
 
 ## Configuration
 
-Settings are edited near the top of the Python file you intend to run. Make
-the same changes in both files if you want the original and DJI versions to
-look identical.
+Settings are edited near the top of `pumpkin_faces.py`.
 
 ### Display and colours
 
@@ -96,17 +81,23 @@ These settings are available in both programs:
 
 - `MICROPHONE_BLOCKSIZE` controls the number of audio samples processed per
   callback. Smaller values can reduce latency but use more processing.
-- `MICROPHONE_LATENCY` is passed to the audio driver. `"low"` prioritizes
-  responsiveness.
-
-The original `pumpkin_faces.py` uses the operating system's default input
-device and one shared microphone level.
-
-The DJI version also has:
-
+- `MICROPHONE_LATENCY` is passed to the audio driver. `"high"` gives the
+  speaker output more buffering to avoid playback underflows.
+- `AUDIO_SAMPLE_RATE` sets the shared input/output sample rate. It is set to
+  `48000` so the DJI receiver and the speaker output can be used in one
+  duplex stream.
+- `AUDIO_OUTPUT_DEVICE` selects the speaker output used for live microphone
+  monitoring. It defaults to `pipewire`, which follows the operating system's
+  selected/default speaker or display audio sink on Linux. Set it to an exact
+  speaker or HDMI display audio device name only if you need to override the
+  system default.
+- `AUDIO_MONITORING` toggles forwarding microphone audio to the selected
+  speaker. Set it to `False` to analyze the microphones without playback.
+- `MICROPHONE_MODE` selects `"default"` or `"dji"`.
 - `MICROPHONE_CHANNELS`, which should remain `2` for the two-transmitter
-  receiver.
-- `MICROPHONE_DEVICE`, the audio device name used for the DJI receiver.
+  receiver when `MICROPHONE_MODE` is `"dji"`.
+- `MICROPHONE_DEVICE`, the audio device name used for the DJI receiver when
+  `MICROPHONE_MODE` is `"dji"`.
 
 ### Number, placement, and appearance of pumpkins
 
@@ -132,10 +123,9 @@ Each pumpkin supports these settings:
 - `use_microphone`: `True` makes the mouth respond to microphone input;
   `False` uses the automatic animation instead.
 
-The DJI version additionally supports:
-
 - `microphone_channel`: zero-based input channel used by this pumpkin. Use
-  `0` for the first receiver channel and `1` for the second receiver channel.
+  `0` for the first receiver channel and `1` for the second receiver channel
+  when `MICROPHONE_MODE` is `"dji"`. It is ignored in `"default"` mode.
 
 For example, this creates three pumpkins across the display:
 
@@ -169,6 +159,6 @@ PUMPKINS = [
 ]
 ```
 
-The `microphone_channel` setting is only used by
-`pumpkin_dji_mic_mini.py`. The original file can use the same list, but all
-microphone-enabled pumpkins respond to its single default microphone.
+In `"default"` mode, all microphone-enabled pumpkins respond to the single
+default microphone. In `"dji"` mode, each pumpkin uses its configured
+`microphone_channel`.
