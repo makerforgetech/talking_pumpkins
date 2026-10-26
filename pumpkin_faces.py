@@ -1,9 +1,11 @@
 
 import math
 import random
+import threading
 import pygame
 import numpy as np
 import sounddevice as sd
+import soundcard as sc
 
 pygame.init()
 
@@ -15,46 +17,71 @@ screen = pygame.display.set_mode(
 WIDTH, HEIGHT = screen.get_size()
 
 pygame.display.set_caption("Pumpkin Face Projection")
-
 clock = pygame.time.Clock()
 
+#Configuration
+AUDIO_MONITORING = True # Forward microphone audio to the selected speaker.
+AUDIO_SOURCE = "system"  # "microphone" or "system"
+AUDIO_SOURCE_GAIN = 0.4 # Lower for quieter input sources (does not affect speaker output, suggest 0.4 for system, 1 for mic)
+
+# When AUDIO_SOURCE is "microphone"
+MICROPHONE_MODE = "default"  # "default" or "custom"
+
+# When MICROPHONE_MODE is "custom", specify the device name and number of channels.
+MICROPHONE_DEVICE = "DJI MIC MINI" # Get this name by running the following console command: `arecord -l`
+MICROPHONE_CHANNELS = 2
+
+# When AUDIO_SOURCE is "system"
+SYSTEM_AUDIO_NOISE_FLOOR = 0.005
+SYSTEM_AUDIO_GAIN = 6.0
+
+# Colors for the pumpkin and its carved features
 BLACK = (0, 0, 0)
 PUMPKIN = (152, 55, 8)
 CARVE_GLOW = (255, 174, 24)
-
-MICROPHONE_BLOCKSIZE = 512
-MICROPHONE_LATENCY = "high"
-AUDIO_SAMPLE_RATE = 48000
-# PipeWire routes to the operating system's selected/default speaker.
-AUDIO_OUTPUT_DEVICE = "pipewire"
-AUDIO_MONITORING = True # Forward microphone audio to the selected speaker.
-MICROPHONE_MODE = "default"  # "default" or "dji"
-MICROPHONE_CHANNELS = 2
-MICROPHONE_DEVICE = "DJI MIC MINI"
 
 # Add, remove, or edit entries to control the pumpkins.  Centre coordinates
 # are normalized (0.0 to 1.0) within the display; scale is a fraction of the
 # display height.
 PUMPKINS = [
     {
-        "center": (0.29, 0.50),
-        "scale": 0.2,
+        "center": (0.45, 0.50),
+        "scale": 0.125,
         "angry": False,
         "mouth_speed": 5.0,
         "use_microphone": True,
         "microphone_channel": 0,
+        "mouth_audio_gain": 1.0,
     },
     {
         "center": (0.6, 0.50),
-        "scale": 0.2,
+        "scale": 0.12,
         "angry": True,
         "mouth_speed": 4.0,
         "mouth_phase": 1.5,
         "use_microphone": True,
         "microphone_channel": 1,
+        "mouth_audio_gain": 1.0,
+    },
+    {
+        "center": (.75, 0.50),
+        "scale": 0.12,
+        "angry": False,
+        "mouth_speed": 4.0,
+        "mouth_phase": 1.5,
+        "use_microphone": True,
+        "microphone_channel": 1,
+        "mouth_audio_gain": 0.9,
     },
 ]
 
+# Leave these alone unless you need to change the microphone block size, latency, or audio sample rate.
+MICROPHONE_BLOCKSIZE = 512
+MICROPHONE_LATENCY = "high"
+AUDIO_SAMPLE_RATE = 48000
+AUDIO_OUTPUT_DEVICE = "pipewire" # PipeWire routes to the operating system's selected/default speaker.
+
+# No need to change anything past this point
 
 def polygon(surface, colour, points):
     """Draw a polygon using integer screen coordinates."""
@@ -117,20 +144,19 @@ class FaceMotion:
         self.next_blink = now + random.uniform(1.5, 4.0)
 
     def update(self, now, dt):
-        # Occasionally choose a new direction to look.
-        if now >= self.next_gaze:
-            directions = [
-                (0, 0),       # Centre
-                (-1, 0),      # Left
-                (1, 0),       # Right
-                (0, -1),      # Up
-                (0, 1),       # Down
-                (-0.7, -0.5), # Upper left
-                (0.7, -0.5),  # Upper right
-                (-0.7, 0.5),  # Lower left
-                (0.7, 0.5),   # Lower right
-            ]
+        directions = [
+            (0, 0),       # Centre
+            (-1, 0),      # Left
+            (1, 0),       # Right
+            (0, -1),      # Up
+            (0, 1),       # Down
+            (-0.7, -0.5), # Upper left
+            (0.7, -0.5),  # Upper right
+            (-0.7, 0.5),  # Lower left
+            (0.7, 0.5),   # Lower right
+        ]
 
+        if now >= self.next_gaze:
             self.target_x, self.target_y = random.choice(directions)
             self.next_gaze = now + random.uniform(1.0, 3.0)
 
@@ -163,22 +189,70 @@ class FaceMotion:
 class MicrophoneLevel:
     """Capture microphone volume and convert it into mouth openings."""
 
+    @staticmethod
+    def _speaker_loopback():
+        if AUDIO_OUTPUT_DEVICE in (None, "pipewire"):
+            speaker = sc.default_speaker()
+        else:
+            configured_name = str(AUDIO_OUTPUT_DEVICE).casefold()
+            speaker = next(
+                (
+                    candidate for candidate in sc.all_speakers()
+                    if (
+                        configured_name == candidate.name.casefold()
+                        or configured_name in candidate.name.casefold()
+                        or configured_name == candidate.id.casefold()
+                    )
+                ),
+                None,
+            )
+            if speaker is None:
+                raise ValueError(
+                    "AUDIO_OUTPUT_DEVICE does not match a speaker: "
+                    f"{AUDIO_OUTPUT_DEVICE}"
+                )
+
+        return sc.get_microphone(
+            f"{speaker.id}.monitor",
+            include_loopback=True,
+        )
+
     def __init__(self):
-        if MICROPHONE_MODE not in {"default", "dji"}:
+        if AUDIO_SOURCE not in {"microphone", "system"}:
             raise ValueError(
-                "MICROPHONE_MODE must be 'default' or 'dji'"
+                "AUDIO_SOURCE must be 'microphone' or 'system'"
+            )
+        if MICROPHONE_MODE not in {"default", "custom"}:
+            raise ValueError(
+                "MICROPHONE_MODE must be 'default' or 'custom'"
             )
 
-        self.input_channels = (
+        self.input_channels = 2 if AUDIO_SOURCE == "system" else (
             1 if MICROPHONE_MODE == "default" else MICROPHONE_CHANNELS
         )
         self.levels = np.zeros(self.input_channels)
         self.smoothed_levels = np.zeros(self.input_channels)
-        input_device = (
-            None if MICROPHONE_MODE == "default" else MICROPHONE_DEVICE
-        )
+        if AUDIO_SOURCE == "system":
+            self._levels_lock = threading.Lock()
+            self._stop_loopback = threading.Event()
+            self._loopback_ready = threading.Event()
+            self._loopback_error = None
+            self._loopback_thread = threading.Thread(
+                target=self._capture_loopback,
+                daemon=True,
+            )
+            self._loopback_thread.start()
+            self._loopback_ready.wait()
+            if self._loopback_error is not None:
+                raise self._loopback_error
+            self.stream = None
+            return
+        else:
+            input_device = (
+                None if MICROPHONE_MODE == "default" else MICROPHONE_DEVICE
+            )
 
-        if AUDIO_MONITORING:
+        if AUDIO_MONITORING and AUDIO_SOURCE == "microphone":
             self.stream = sd.Stream(
                 device=(input_device, AUDIO_OUTPUT_DEVICE),
                 channels=(self.input_channels, 2),
@@ -198,13 +272,45 @@ class MicrophoneLevel:
             )
         self.stream.start()
 
+    def _capture_loopback(self):
+        try:
+            loopback = self._speaker_loopback()
+            with loopback.recorder(
+                samplerate=AUDIO_SAMPLE_RATE,
+                blocksize=MICROPHONE_BLOCKSIZE,
+            ) as recorder:
+                self._loopback_ready.set()
+                while not self._stop_loopback.is_set():
+                    self._process_input(
+                        recorder.record(numframes=MICROPHONE_BLOCKSIZE),
+                        None,
+                    )
+        except Exception as error:
+            self._loopback_error = error
+            self._loopback_ready.set()
+
     def _process_input(self, indata, status):
         # Do not print recoverable overflows from the real-time callback.
         if status and not (
             status.input_overflow or status.output_underflow
         ):
             print(f"Microphone status: {status}")
-        self.levels = np.sqrt(np.mean(indata ** 2, axis=0))
+        if AUDIO_SOURCE == "system":
+            # Mid emphasizes centered lead vocals; side emphasizes stereo
+            # backing vocals and instruments.
+            mid = (indata[:, 0] + indata[:, 1]) * 0.5
+            side = (indata[:, 0] - indata[:, 1]) * 0.5
+            levels = np.array([
+                np.sqrt(np.mean(mid ** 2)),
+                np.sqrt(np.mean(side ** 2)),
+            ])
+        else:
+            levels = np.sqrt(np.mean(indata ** 2, axis=0))
+        if AUDIO_SOURCE == "system":
+            with self._levels_lock:
+                self.levels = levels
+        else:
+            self.levels = levels
 
     def _monitor_callback(self, indata, outdata, frames, callback_time, status):
         self._process_input(indata, status)
@@ -218,7 +324,21 @@ class MicrophoneLevel:
 
     def openings(self, dt):
         # Ignore a small ambient noise floor and smooth rapid changes.
-        target = np.clip((self.levels - 0.015) * 12.0, 0.0, 1.0)
+        if AUDIO_SOURCE == "system":
+            with self._levels_lock:
+                levels = self.levels.copy()
+        else:
+            levels = self.levels
+        levels = levels * AUDIO_SOURCE_GAIN
+        if AUDIO_SOURCE == "system":
+            target = np.clip(
+                (levels - SYSTEM_AUDIO_NOISE_FLOOR)
+                * SYSTEM_AUDIO_GAIN,
+                0.0,
+                1.0,
+            )
+        else:
+            target = np.clip((levels - 0.015) * 12.0, 0.0, 1.0)
         for channel in range(self.input_channels):
             speed = (
                 90.0
@@ -232,14 +352,20 @@ class MicrophoneLevel:
         return self.smoothed_levels.tolist()
 
     def close(self):
-        self.stream.stop()
-        self.stream.close()
+        if AUDIO_SOURCE == "system":
+            self._stop_loopback.set()
+            self._loopback_thread.join(timeout=1.0)
+        else:
+            self.stream.stop()
+            self.stream.close()
 
 
 def draw_eye(surface, x, y, size, angry, gaze_x, gaze_y, blink):
-    """Draw an eye-shaped opening with a warm light behind it."""
+    """Draw a glowing carved eye that moves as one solid cutout."""
 
     height = size * (1.5 if not angry else 1.1) * blink
+    x += gaze_x * size * 0.38
+    y += gaze_y * height * 0.35
 
     if blink < 0.12:
         # Thin line when the eye is almost closed.
@@ -346,15 +472,40 @@ def draw_face(surface, cx, cy, scale, angry, opening, motion):
     eye_dx = scale * 0.34
     eye_size = scale * 0.17
 
-    # Both eyes look in the same direction.
-    draw_eye(
-        surface, cx - eye_dx, eye_y, eye_size,
-        angry, gaze_x, gaze_y, blink
-    )
-    draw_eye(
-        surface, cx + eye_dx, eye_y, eye_size,
-        angry, gaze_x, gaze_y, blink
-    )
+    draw_eye(surface, cx - eye_dx, eye_y, eye_size,
+             angry, gaze_x, gaze_y, blink)
+    draw_eye(surface, cx + eye_dx, eye_y, eye_size,
+             angry, gaze_x, gaze_y, blink)
+    if angry:
+        brow_y = eye_y + gaze_y * eye_size * 0.35 - eye_size * 1.75
+        brow_width = eye_size * 1.25
+        brow_height = eye_size * 0.28
+        brow_shift = gaze_x * eye_size * 0.38
+        for points in [
+            [
+                (cx - eye_dx - brow_width + brow_shift,
+                 brow_y - eye_size * 0.12),
+                (cx - eye_dx + brow_width + brow_shift,
+                 brow_y + eye_size * 0.18),
+                (cx - eye_dx + brow_width * 0.92 + brow_shift,
+                 brow_y + eye_size * 0.18 + brow_height),
+                (cx - eye_dx - brow_width * 0.92 + brow_shift,
+                 brow_y - eye_size * 0.12 + brow_height),
+            ],
+            [
+                (cx + eye_dx - brow_width + brow_shift,
+                 brow_y + eye_size * 0.18),
+                (cx + eye_dx + brow_width + brow_shift,
+                 brow_y - eye_size * 0.12),
+                (cx + eye_dx + brow_width * 0.92 + brow_shift,
+                 brow_y - eye_size * 0.12 + brow_height),
+                (cx + eye_dx - brow_width * 0.92 + brow_shift,
+                 brow_y + eye_size * 0.18 + brow_height),
+            ],
+        ]:
+            brow_cx = sum(x for x, _ in points) / len(points)
+            brow_cy = sum(y for _, y in points) / len(points)
+            glowing_polygon(surface, points, brow_cx, brow_cy)
 
     # Nose
     nose_y = cy + scale * 0.02
@@ -392,10 +543,14 @@ def draw_scene(surface, width, height, pumpkins, motion_states, elapsed,
         else:
             channel = (
                 pumpkin.get("microphone_channel", 0)
-                if MICROPHONE_MODE == "dji"
+                if (
+                    AUDIO_SOURCE == "system"
+                    or MICROPHONE_MODE == "custom"
+                )
                 else 0
             )
             opening = microphone_openings[channel]
+            opening *= pumpkin.get("mouth_audio_gain", 1.0)
         draw_face(
             surface,
             width * center_x,

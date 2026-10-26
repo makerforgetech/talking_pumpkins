@@ -20,7 +20,7 @@ Choose the microphone mode by editing `MICROPHONE_MODE` near the top of
 
 - `"default"` uses the operating system's default microphone. All
   microphone-enabled pumpkins respond to that one input.
-- `"dji"` uses the two-channel `DJI MIC MINI` receiver. Channel 1 drives the
+- `"custom"` uses the two-channel `DJI MIC MINI` receiver. Channel 1 drives the
   left pumpkin's mouth and channel 2 drives the right pumpkin's mouth.
 
 The DJI receiver must output the microphones as separate stereo channels. If
@@ -61,6 +61,16 @@ operating system reports a different name, update `MICROPHONE_DEVICE`.
 
 Settings are edited near the top of `pumpkin_faces.py`.
 
+### Quick start
+
+The default is `AUDIO_SOURCE = "system"`. This should display the pumpkins on a second screen (projector), output anything you play to your device speakers, as well as forward sound to the second screen's audio output.
+
+Three pumpkins will be displayed on the screen, each with independent mouth and eye movements.
+
+To use the microphone instead, set `AUDIO_SOURCE = "microphone"` and configure `MICROPHONE_MODE` and `MICROPHONE_DEVICE` accordingly. `default` is the operating system's default microphone.
+
+A `custom` microphone mode uses the device specified in `MICROPHONE_DEVICE` and the number of channels specified in `MICROPHONE_CHANNELS`. Each channel can drive a different pumpkin's mouth. This script is configured to support the `DJI MIC MINI` with two channels.
+
 ### Display and colours
 
 - `BLACK` is the background colour.
@@ -79,6 +89,7 @@ zero-based, so `0` is the first display and `1` is the second.
 
 These settings are available in both programs:
 
+(Leave these alone unless you know what you are doing.)
 - `MICROPHONE_BLOCKSIZE` controls the number of audio samples processed per
   callback. Smaller values can reduce latency but use more processing.
 - `MICROPHONE_LATENCY` is passed to the audio driver. `"high"` gives the
@@ -91,13 +102,39 @@ These settings are available in both programs:
   selected/default speaker or display audio sink on Linux. Set it to an exact
   speaker or HDMI display audio device name only if you need to override the
   system default.
+- `SYSTEM_AUDIO_NOISE_FLOOR` prevents low-level speaker-loopback noise from
+  opening the mouths when no system audio is playing.
+- `SYSTEM_AUDIO_GAIN` controls how strongly system playback opens the mouths.
+
+Change these only if you need to customize the audio input or output behavior.
 - `AUDIO_MONITORING` toggles forwarding microphone audio to the selected
   speaker. Set it to `False` to analyze the microphones without playback.
-- `MICROPHONE_MODE` selects `"default"` or `"dji"`.
+- `AUDIO_SOURCE` selects the signal used for mouth animation:
+  - `"microphone"` uses the configured default or DJI microphone input.
+  - `"system"` captures the stereo system-audio loopback from
+    `AUDIO_OUTPUT_DEVICE`.
+- `AUDIO_SOURCE_GAIN` scales the captured waveform before any mouth processing.
+  This changes only animation sensitivity; it does not change the actual
+  microphone or speaker volume. For example, `0.5` makes all mouths respond
+  to half-strength input, which helps prevent loud songs from holding them
+  fully open.
+- `MICROPHONE_MODE` selects `"default"` or `"custom"`.
 - `MICROPHONE_CHANNELS`, which should remain `2` for the two-transmitter
-  receiver when `MICROPHONE_MODE` is `"dji"`.
+  receiver when `MICROPHONE_MODE` is `"custom"`.
 - `MICROPHONE_DEVICE`, the audio device name used for the DJI receiver when
-  `MICROPHONE_MODE` is `"dji"`.
+  `MICROPHONE_MODE` is `"custom"`.
+
+When `AUDIO_SOURCE` is `"system"`, the script derives the loopback source from
+`AUDIO_OUTPUT_DEVICE`. The generic `pipewire` value follows the operating
+system's default speaker. If `AUDIO_OUTPUT_DEVICE` is changed to a specific
+speaker or HDMI device name, its corresponding monitor is captured instead.
+
+In system-audio mode, the first microphone channel uses the centered
+mid-signal (`left + right`) as a lead-vocal estimate. The second uses the
+stereo side-signal (`left - right`) as a backing-vocal/music estimate. This is
+a lightweight stereo heuristic; it cannot perfectly separate vocals from a
+finished stereo mix. Audio monitoring is disabled in this mode to avoid
+feeding the captured playback back into the speakers.
 
 ### Number, placement, and appearance of pumpkins
 
@@ -122,10 +159,13 @@ Each pumpkin supports these settings:
   This is useful for keeping multiple non-microphone mouths out of sync.
 - `use_microphone`: `True` makes the mouth respond to microphone input;
   `False` uses the automatic animation instead.
+- `mouth_audio_gain`: per-pumpkin volume control for waveform-driven mouth
+  movement. `1.0` is the current response, `0.5` makes the mouth half as
+  sensitive, and values above `1.0` amplify the response.
 
 - `microphone_channel`: zero-based input channel used by this pumpkin. Use
   `0` for the first receiver channel and `1` for the second receiver channel
-  when `MICROPHONE_MODE` is `"dji"`. It is ignored in `"default"` mode.
+  when `MICROPHONE_MODE` is `"custom"`. It is ignored in `"default"` mode.
 
 For example, this creates three pumpkins across the display:
 
@@ -160,5 +200,5 @@ PUMPKINS = [
 ```
 
 In `"default"` mode, all microphone-enabled pumpkins respond to the single
-default microphone. In `"dji"` mode, each pumpkin uses its configured
+default microphone. In `"custom"` mode, each pumpkin uses its configured
 `microphone_channel`.
