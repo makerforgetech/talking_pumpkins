@@ -93,11 +93,35 @@ These settings are available in both programs:
   system default.
 - `AUDIO_MONITORING` toggles forwarding microphone audio to the selected
   speaker. Set it to `False` to analyze the microphones without playback.
+- `AUDIO_SOURCE` selects the signal used for mouth animation:
+  - `"microphone"` uses the configured default or DJI microphone input.
+  - `"system"` captures the stereo system-audio loopback from
+    `AUDIO_OUTPUT_DEVICE`.
+- `AUDIO_SOURCE_GAIN` scales the captured waveform before any mouth processing.
+  This changes only animation sensitivity; it does not change the actual
+  microphone or speaker volume. For example, `0.5` makes all mouths respond
+  to half-strength input, which helps prevent loud songs from holding them
+  fully open.
 - `MICROPHONE_MODE` selects `"default"` or `"dji"`.
 - `MICROPHONE_CHANNELS`, which should remain `2` for the two-transmitter
   receiver when `MICROPHONE_MODE` is `"dji"`.
 - `MICROPHONE_DEVICE`, the audio device name used for the DJI receiver when
   `MICROPHONE_MODE` is `"dji"`.
+- `SYSTEM_AUDIO_NOISE_FLOOR` prevents low-level speaker-loopback noise from
+  opening the mouths when no system audio is playing.
+- `SYSTEM_AUDIO_GAIN` controls how strongly system playback opens the mouths.
+
+When `AUDIO_SOURCE` is `"system"`, the script derives the loopback source from
+`AUDIO_OUTPUT_DEVICE`. The generic `pipewire` value follows the operating
+system's default speaker. If `AUDIO_OUTPUT_DEVICE` is changed to a specific
+speaker or HDMI device name, its corresponding monitor is captured instead.
+
+In system-audio mode, the first microphone channel uses the centered
+mid-signal (`left + right`) as a lead-vocal estimate. The second uses the
+stereo side-signal (`left - right`) as a backing-vocal/music estimate. This is
+a lightweight stereo heuristic; it cannot perfectly separate vocals from a
+finished stereo mix. Audio monitoring is disabled in this mode to avoid
+feeding the captured playback back into the speakers.
 
 ### Number, placement, and appearance of pumpkins
 
@@ -122,6 +146,9 @@ Each pumpkin supports these settings:
   This is useful for keeping multiple non-microphone mouths out of sync.
 - `use_microphone`: `True` makes the mouth respond to microphone input;
   `False` uses the automatic animation instead.
+- `mouth_audio_gain`: per-pumpkin volume control for waveform-driven mouth
+  movement. `1.0` is the current response, `0.5` makes the mouth half as
+  sensitive, and values above `1.0` amplify the response.
 
 - `microphone_channel`: zero-based input channel used by this pumpkin. Use
   `0` for the first receiver channel and `1` for the second receiver channel

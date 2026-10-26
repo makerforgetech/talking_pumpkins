@@ -1,9 +1,11 @@
 
 import math
 import random
+import threading
 import pygame
 import numpy as np
 import sounddevice as sd
+import soundcard as sc
 
 pygame.init()
 
@@ -28,9 +30,14 @@ AUDIO_SAMPLE_RATE = 48000
 # PipeWire routes to the operating system's selected/default speaker.
 AUDIO_OUTPUT_DEVICE = "pipewire"
 AUDIO_MONITORING = True # Forward microphone audio to the selected speaker.
+AUDIO_SOURCE = "system"  # "microphone" or "system"
+AUDIO_SOURCE_GAIN = .4
+# When AUDIO_SOURCE is "microphone"
 MICROPHONE_MODE = "default"  # "default" or "dji"
 MICROPHONE_CHANNELS = 2
-MICROPHONE_DEVICE = "DJI MIC MINI"
+MICROPHONE_DEVICE = "DJI MIC MINI" # Get this name by running the following terminal command: pactl list short sources
+SYSTEM_AUDIO_NOISE_FLOOR = 0.005
+SYSTEM_AUDIO_GAIN = 6.0
 
 # Add, remove, or edit entries to control the pumpkins.  Centre coordinates
 # are normalized (0.0 to 1.0) within the display; scale is a fraction of the
@@ -38,11 +45,12 @@ MICROPHONE_DEVICE = "DJI MIC MINI"
 PUMPKINS = [
     {
         "center": (0.29, 0.50),
-        "scale": 0.2,
+        "scale": 0.3,
         "angry": False,
         "mouth_speed": 5.0,
         "use_microphone": True,
         "microphone_channel": 0,
+        "mouth_audio_gain": 1.0,
     },
     {
         "center": (0.6, 0.50),
@@ -52,6 +60,17 @@ PUMPKINS = [
         "mouth_phase": 1.5,
         "use_microphone": True,
         "microphone_channel": 1,
+        "mouth_audio_gain": 1.0,
+    },
+    {
+        "center": (.85, 0.50),
+        "scale": 0.2,
+        "angry": False,
+        "mouth_speed": 4.0,
+        "mouth_phase": 1.5,
+        "use_microphone": True,
+        "microphone_channel": 1,
+        "mouth_audio_gain": 0.9,
     },
 ]
 
@@ -163,22 +182,70 @@ class FaceMotion:
 class MicrophoneLevel:
     """Capture microphone volume and convert it into mouth openings."""
 
+    @staticmethod
+    def _speaker_loopback():
+        if AUDIO_OUTPUT_DEVICE in (None, "pipewire"):
+            speaker = sc.default_speaker()
+        else:
+            configured_name = str(AUDIO_OUTPUT_DEVICE).casefold()
+            speaker = next(
+                (
+                    candidate for candidate in sc.all_speakers()
+                    if (
+                        configured_name == candidate.name.casefold()
+                        or configured_name in candidate.name.casefold()
+                        or configured_name == candidate.id.casefold()
+                    )
+                ),
+                None,
+            )
+            if speaker is None:
+                raise ValueError(
+                    "AUDIO_OUTPUT_DEVICE does not match a speaker: "
+                    f"{AUDIO_OUTPUT_DEVICE}"
+                )
+
+        return sc.get_microphone(
+            f"{speaker.id}.monitor",
+            include_loopback=True,
+        )
+
     def __init__(self):
+        if AUDIO_SOURCE not in {"microphone", "system"}:
+            raise ValueError(
+                "AUDIO_SOURCE must be 'microphone' or 'system'"
+            )
         if MICROPHONE_MODE not in {"default", "dji"}:
             raise ValueError(
                 "MICROPHONE_MODE must be 'default' or 'dji'"
             )
 
-        self.input_channels = (
+        self.input_channels = 2 if AUDIO_SOURCE == "system" else (
             1 if MICROPHONE_MODE == "default" else MICROPHONE_CHANNELS
         )
         self.levels = np.zeros(self.input_channels)
         self.smoothed_levels = np.zeros(self.input_channels)
-        input_device = (
-            None if MICROPHONE_MODE == "default" else MICROPHONE_DEVICE
-        )
+        if AUDIO_SOURCE == "system":
+            self._levels_lock = threading.Lock()
+            self._stop_loopback = threading.Event()
+            self._loopback_ready = threading.Event()
+            self._loopback_error = None
+            self._loopback_thread = threading.Thread(
+                target=self._capture_loopback,
+                daemon=True,
+            )
+            self._loopback_thread.start()
+            self._loopback_ready.wait()
+            if self._loopback_error is not None:
+                raise self._loopback_error
+            self.stream = None
+            return
+        else:
+            input_device = (
+                None if MICROPHONE_MODE == "default" else MICROPHONE_DEVICE
+            )
 
-        if AUDIO_MONITORING:
+        if AUDIO_MONITORING and AUDIO_SOURCE == "microphone":
             self.stream = sd.Stream(
                 device=(input_device, AUDIO_OUTPUT_DEVICE),
                 channels=(self.input_channels, 2),
@@ -198,13 +265,45 @@ class MicrophoneLevel:
             )
         self.stream.start()
 
+    def _capture_loopback(self):
+        try:
+            loopback = self._speaker_loopback()
+            with loopback.recorder(
+                samplerate=AUDIO_SAMPLE_RATE,
+                blocksize=MICROPHONE_BLOCKSIZE,
+            ) as recorder:
+                self._loopback_ready.set()
+                while not self._stop_loopback.is_set():
+                    self._process_input(
+                        recorder.record(numframes=MICROPHONE_BLOCKSIZE),
+                        None,
+                    )
+        except Exception as error:
+            self._loopback_error = error
+            self._loopback_ready.set()
+
     def _process_input(self, indata, status):
         # Do not print recoverable overflows from the real-time callback.
         if status and not (
             status.input_overflow or status.output_underflow
         ):
             print(f"Microphone status: {status}")
-        self.levels = np.sqrt(np.mean(indata ** 2, axis=0))
+        if AUDIO_SOURCE == "system":
+            # Mid emphasizes centered lead vocals; side emphasizes stereo
+            # backing vocals and instruments.
+            mid = (indata[:, 0] + indata[:, 1]) * 0.5
+            side = (indata[:, 0] - indata[:, 1]) * 0.5
+            levels = np.array([
+                np.sqrt(np.mean(mid ** 2)),
+                np.sqrt(np.mean(side ** 2)),
+            ])
+        else:
+            levels = np.sqrt(np.mean(indata ** 2, axis=0))
+        if AUDIO_SOURCE == "system":
+            with self._levels_lock:
+                self.levels = levels
+        else:
+            self.levels = levels
 
     def _monitor_callback(self, indata, outdata, frames, callback_time, status):
         self._process_input(indata, status)
@@ -218,7 +317,21 @@ class MicrophoneLevel:
 
     def openings(self, dt):
         # Ignore a small ambient noise floor and smooth rapid changes.
-        target = np.clip((self.levels - 0.015) * 12.0, 0.0, 1.0)
+        if AUDIO_SOURCE == "system":
+            with self._levels_lock:
+                levels = self.levels.copy()
+        else:
+            levels = self.levels
+        levels = levels * AUDIO_SOURCE_GAIN
+        if AUDIO_SOURCE == "system":
+            target = np.clip(
+                (levels - SYSTEM_AUDIO_NOISE_FLOOR)
+                * SYSTEM_AUDIO_GAIN,
+                0.0,
+                1.0,
+            )
+        else:
+            target = np.clip((levels - 0.015) * 12.0, 0.0, 1.0)
         for channel in range(self.input_channels):
             speed = (
                 90.0
@@ -232,8 +345,12 @@ class MicrophoneLevel:
         return self.smoothed_levels.tolist()
 
     def close(self):
-        self.stream.stop()
-        self.stream.close()
+        if AUDIO_SOURCE == "system":
+            self._stop_loopback.set()
+            self._loopback_thread.join(timeout=1.0)
+        else:
+            self.stream.stop()
+            self.stream.close()
 
 
 def draw_eye(surface, x, y, size, angry, gaze_x, gaze_y, blink):
@@ -392,10 +509,14 @@ def draw_scene(surface, width, height, pumpkins, motion_states, elapsed,
         else:
             channel = (
                 pumpkin.get("microphone_channel", 0)
-                if MICROPHONE_MODE == "dji"
+                if (
+                    AUDIO_SOURCE == "system"
+                    or MICROPHONE_MODE == "dji"
+                )
                 else 0
             )
             opening = microphone_openings[channel]
+            opening *= pumpkin.get("mouth_audio_gain", 1.0)
         draw_face(
             surface,
             width * center_x,
