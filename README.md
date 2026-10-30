@@ -74,7 +74,7 @@ A `custom` microphone mode uses the device specified in `MICROPHONE_DEVICE` and 
 ### Display and colours
 
 - `BLACK` is the background colour.
-- `PUMPKIN` is the main pumpkin colour.
+- `PUMPKIN` is the main pumpkin colour. You can also disable showing the pumpkin flesh by setting `SHOW_PUMPKIN_FLESH = False`.
 - `CARVE_GLOW` is the orange glow used for the carved features.
 
 Colours use RGB tuples, with each component from `0` to `255`. For example,
@@ -202,3 +202,23 @@ PUMPKINS = [
 In `"default"` mode, all microphone-enabled pumpkins respond to the single
 default microphone. In `"custom"` mode, each pumpkin uses its configured
 `microphone_channel`.
+
+
+# Running The Show
+
+1. Connect HDMI between laptop and projector
+2. Power on the projector.
+3. Turn on bluetooth speaker, connect to projector.
+4. Run ./run_pumpkin.sh
+5. Align with pumpkins, adjusting values in the `PUMPKINS` list as needed.
+6. Open spotify on laptop, select playlist and set on repeat.
+7. Ensure pumpkin script is focussed on laptop.
+8. When ready, start the show by playing the music from phone.
+9. Enjoy the pumpkin show!
+
+## Fine Tuning
+
+While the programme is running, press `1`-`9` to select a pumpkin, use the
+arrow keys to adjust its centre, and press `<` or `>` to decrease or increase
+its scale. Hold an arrow key to keep moving the pumpkin. Press Enter to print
+the selected pumpkin's `center` and `scale` values in the terminal.

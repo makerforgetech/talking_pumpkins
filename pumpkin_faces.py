@@ -37,34 +37,40 @@ SYSTEM_AUDIO_GAIN = 6.0
 
 # Colors for the pumpkin and its carved features
 BLACK = (0, 0, 0)
-PUMPKIN = (152, 55, 8)
+
+PUMPKIN = (69, 23, 1) # Darker
+# PUMPKIN = (152, 55, 8) # Brighter
+SHOW_PUMPKIN_FLESH = True # False = Don't draw pumpkin flesh
+
 CARVE_GLOW = (255, 174, 24)
+
+
 
 # Add, remove, or edit entries to control the pumpkins.  Centre coordinates
 # are normalized (0.0 to 1.0) within the display; scale is a fraction of the
 # display height.
 PUMPKINS = [
     {
-        "center": (0.45, 0.50),
-        "scale": 0.125,
-        "angry": False,
-        "mouth_speed": 5.0,
-        "use_microphone": True,
-        "microphone_channel": 0,
-        "mouth_audio_gain": 1.0,
-    },
-    {
-        "center": (0.6, 0.50),
-        "scale": 0.12,
+        "center": (0.4, 0.50),
+        "scale": 0.13,
         "angry": True,
-        "mouth_speed": 4.0,
-        "mouth_phase": 1.5,
+        "mouth_speed": 5.0,
         "use_microphone": True,
         "microphone_channel": 1,
         "mouth_audio_gain": 1.0,
     },
     {
-        "center": (.75, 0.50),
+        "center": (0.6, 0.50),
+        "scale": 0.18,
+        "angry": False,
+        "mouth_speed": 4.0,
+        "mouth_phase": 1.5,
+        "use_microphone": True,
+        "microphone_channel": 0,
+        "mouth_audio_gain": 1.0,
+    },
+    {
+        "center": (.80, 0.50),
         "scale": 0.12,
         "angry": False,
         "mouth_speed": 4.0,
@@ -74,6 +80,9 @@ PUMPKINS = [
         "mouth_audio_gain": 0.9,
     },
 ]
+
+PUMPKIN_MOVE_STEP = 0.001
+PUMPKIN_SCALE_STEP = 0.001
 
 # Leave these alone unless you need to change the microphone block size, latency, or audio sample rate.
 MICROPHONE_BLOCKSIZE = 512
@@ -363,7 +372,7 @@ class MicrophoneLevel:
 def draw_eye(surface, x, y, size, angry, gaze_x, gaze_y, blink):
     """Draw a glowing carved eye that moves as one solid cutout."""
 
-    height = size * (1.5 if not angry else 1.1) * blink
+    height = size * (1.2 if not angry else 0.9) * blink
     x += gaze_x * size * 0.38
     y += gaze_y * height * 0.35
 
@@ -451,22 +460,37 @@ def draw_mouth(surface, cx, cy, width, opening, angry):
 def draw_face(surface, cx, cy, scale, angry, opening, motion):
     gaze_x, gaze_y, blink = motion
 
+    if SHOW_PUMPKIN_FLESH:
     # Layered ellipses give the pumpkin a ribbed, uneven surface.
-    body = pygame.Rect(
-        int(cx - scale * 1.05), int(cy - scale * 0.98),
-        int(scale * 2.10), int(scale * 1.95)
-    )
-    pygame.draw.ellipse(surface, (76, 22, 3), body.inflate(scale * 0.08, scale * 0.08))
-    pygame.draw.ellipse(surface, PUMPKIN, body)
-    for offset, colour in [
-        (-0.52, (105, 31, 4)),
-        (-0.24, (184, 65, 7)),
-        (0.24, (111, 30, 3)),
-        (0.52, (70, 18, 2)),
-    ]:
-        rib = body.inflate(-abs(offset) * scale * 0.24, -scale * 0.04)
-        rib.centerx += int(offset * scale * 0.35)
-        pygame.draw.ellipse(surface, colour, rib, max(2, int(scale * 0.035)))
+        body = pygame.Rect(
+            int(cx - scale * 1.05), int(cy - scale * 0.98),
+            int(scale * 2.10), int(scale * 1.95)
+        )
+        feather = pygame.Surface(body.size, pygame.SRCALPHA)
+        pygame.draw.ellipse(feather, BLACK, feather.get_rect())
+        for inset, alpha in [
+            (0.00, 36),
+            (0.03, 52),
+            (0.06, 72),
+            (0.10, 102),
+            (0.15, 150),
+            (0.21, 220),
+        ]:
+            pumpkin_layer = feather.get_rect().inflate(
+                -int(body.width * inset),
+                -int(body.height * inset),
+            )
+            pygame.draw.ellipse(feather, (*PUMPKIN, alpha), pumpkin_layer)
+        surface.blit(feather, body.topleft)
+        # for offset, colour in [
+        #     (-0.52, (105, 31, 4)),
+        #     (-0.24, (184, 65, 7)),
+        #     (0.24, (111, 30, 3)),
+        #     (0.52, (70, 18, 2)),
+        # ]:
+        #     rib = body.inflate(-abs(offset) * scale * 0.24, -scale * 0.04)
+        #     rib.centerx += int(offset * scale * 0.35)
+        #     pygame.draw.ellipse(surface, colour, rib, max(2, int(scale * 0.035)))
 
     eye_y = cy - scale * 0.22
     eye_dx = scale * 0.34
@@ -562,11 +586,65 @@ def draw_scene(surface, width, height, pumpkins, motion_states, elapsed,
         )
 
 
+def handle_calibration_key(event, pumpkins, selected_index):
+    number_keys = (
+        pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5,
+        pygame.K_6, pygame.K_7, pygame.K_8, pygame.K_9,
+    )
+    if event.key in number_keys:
+        index = number_keys.index(event.key)
+        if index < len(pumpkins):
+            selected_index = index
+            print(f"Selected pumpkin {selected_index + 1}", flush=True)
+    elif event.key in (
+        pygame.K_LEFT, pygame.K_RIGHT, pygame.K_UP, pygame.K_DOWN
+    ):
+        pumpkin = pumpkins[selected_index]
+        center_x, center_y = pumpkin["center"]
+        if event.key == pygame.K_LEFT:
+            center_x -= PUMPKIN_MOVE_STEP
+        elif event.key == pygame.K_RIGHT:
+            center_x += PUMPKIN_MOVE_STEP
+        elif event.key == pygame.K_UP:
+            center_y -= PUMPKIN_MOVE_STEP
+        else:
+            center_y += PUMPKIN_MOVE_STEP
+        pumpkin["center"] = (
+            round(min(1.0, max(0.0, center_x)), 4),
+            round(min(1.0, max(0.0, center_y)), 4),
+        )
+    elif event.unicode in ("<", ">"):
+        pumpkin = pumpkins[selected_index]
+        direction = 1 if event.unicode == ">" else -1
+        pumpkin["scale"] = round(
+            max(0.01, pumpkin["scale"] + direction * PUMPKIN_SCALE_STEP),
+            4,
+        )
+    elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+        pumpkin = pumpkins[selected_index]
+        center_x, center_y = pumpkin["center"]
+        print(
+            f"Pumpkin {selected_index + 1}:\n"
+            f'    "center": ({center_x:.4f}, {center_y:.4f}),\n'
+            f'    "scale": {pumpkin["scale"]:.4f},',
+            flush=True,
+        )
+
+    return selected_index
+
+
 def main():
     running = True
     start = pygame.time.get_ticks() / 1000.0
 
     motion_states = [FaceMotion(start) for _ in PUMPKINS]
+    selected_pumpkin = 0
+    pygame.key.set_repeat(200, 30)
+    print(
+        "Calibration: press 1-9 to select a pumpkin, arrow keys to move it, "
+        "< and > to change its scale, and Enter to print its values.",
+        flush=True,
+    )
     microphone = (
         MicrophoneLevel()
         if any(pumpkin.get("use_microphone", False) for pumpkin in PUMPKINS)
@@ -586,6 +664,10 @@ def main():
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     running = False
+                else:
+                    selected_pumpkin = handle_calibration_key(
+                        event, PUMPKINS, selected_pumpkin
+                    )
 
         t = now - start
 
